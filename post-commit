@@ -1,2 +1,44 @@
 #!/usr/bin/env bash
-git push origin master
+set -euo pipefail
+
+# TODO Set the churn/file thresholds around the median for the project,
+# once there is enough history to calculate them
+declare MIN_INTERVAL=$((60 * 60))       # never push more often than hourly
+declare MAX_INTERVAL=$((24 * 60 * 60))  # always push at least daily
+declare CHURN_THRESHOLD=150             # changed lines
+declare FILE_THRESHOLD=15               # changed files (catches binary-heavy commits)
+
+declare REF="refs/remotes/origin/main"
+
+push() {
+  git push --quiet origin main
+  exit 0
+}
+
+# Fresh clone with no tracking ref; just push
+git rev-parse --verify --quiet "${REF}" >/dev/null || push
+
+# Already up to date
+[[ "$(git rev-parse HEAD)" == "$(git rev-parse "${REF}")" ]] && exit 0
+
+declare REMOTE_AGE=$(( $(date +%s) - $(git log -1 --format=%ct "${REF}") ))
+
+(( REMOTE_AGE >= MAX_INTERVAL )) && push
+(( REMOTE_AGE < MIN_INTERVAL )) && exit 0
+
+# --numstat reports "-" for binary files; skip those columns
+declare CHURN=$(
+  git diff --numstat "${REF}..HEAD" \
+  | awk '
+    {
+      if ($1 != "-") s += $1
+      if ($2 != "-") s += $2
+    }
+
+    END { print s+0 }
+  '
+)
+
+declare FILES=$(git diff --name-only "${REF}..HEAD" | wc -l)
+
+(( CHURN >= CHURN_THRESHOLD || FILES >= FILE_THRESHOLD )) && push
