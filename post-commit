@@ -3,6 +3,20 @@
 (require '[babashka.process :as p]
          '[clojure.string :as str])
 
+(def min-interval (* 60 60))   ; 1 hour
+(def max-interval (* 3 60 60)) ; 3 hours
+(def churn-threshold 150)
+(def file-threshold 15)
+
+(def sample-size 400)
+
+(def remote-ref "refs/remotes/origin/main")
+
+(def stat-pathspec
+  [":(exclude)logseq/bak/**"
+   ":(exclude)logseq/.recycle/**"
+   ":(exclude)assets/**"])
+
 (defn git
   "Runs git with `args`, returning trimmed stdout, or nill if git exited non-zero."
   [& args]
@@ -18,8 +32,6 @@
       :out
       str/trim))
 
-(def remote-ref "refs/remotes/origin/main")
-
 (defn epoch-now [] (.getEpochSecond (java.time.Instant/now)))
 
 (defn remote-age
@@ -32,3 +44,80 @@
   "--numstate reports `-` for binary files."
   [s]
   (if (= "-" s) 0 (parse-long s)))
+
+(defn numstat-totals
+  "Sums `added\tdeleted\tpath` lines into {:churn n :files n}.
+   Binary files contribute a file but no churn."
+  [lines]
+  (reduce (fn [acc line]
+            (let [[added deleted] (str/split line #"\t")]
+              (-> acc
+                  (update :files inc)
+                  (update :churn + (count-or-zero added) (count-or-zero deleted)))))
+          {:churn 0 :files 0}
+          lines))
+
+(defn unpushed-stats []
+  (->> (git! "diff" "--numstat" (str remote-ref "..HEAD"))
+       str/split-lines
+       (remove str/blank?)
+       numstat-totals))
+
+(defn- parse-log-block
+  "A block is `<hash> <timestamp>` followed by numstat lines."
+  [block]
+  (let [[header & stat-lines] (str/split-lines block)
+        [hash ts]             (str/split header #" ")]
+    (assoc (numstat-totals (remove str/blank? stat-lines))
+           :hash hash
+           :ts   (parse-long ts))))
+
+(defn sample-commits
+  "Per-commit {:hash :ts :churn :files} for recent history, excluding `pathspec`."
+  [exclusions]
+  (->> (apply git!
+              "log"
+              (str "--max-count=" sample-size)
+              "--no-merges"
+              "--numstat"
+              "--format=%x00%H %ct"
+              "--"
+              exclusions)
+       (#(str/split % #"\x00"))
+       (remove str/blank?)
+       (map parse-log-block)))
+
+(defn should-push?
+  [{:keys [remote-age up-to-date? churn files]}]
+  (cond
+    (nil? remote-age)            [:push "no remote tracking ref"]
+    up-to-date?                  [:skip "already up to date"]
+    (>= remote-age max-interval) [:push "remote is stale"]
+    (< remote-age min-interval)  [:skip "pushed too recently"]
+    (>= churn churn-threshold)   [:push (str churn " lines changed")]
+    (>= files file-threshold)    [:push (str files " files changes")]
+    :else                        [:skip "below thresholds"]))
+
+(defn current-state []
+  (let [age (remote-age)]
+    (merge {:remote-age  age
+            :up-to-date? (and age (= (git! "rev-parse" "HEAD")
+                                     (git! "rev-parse" remote-ref)))}
+           (if age (unpushed-stats) {:churn 0 :files 0}))))
+
+(defn percentile
+  "Nearest-rank percentile of `xs`. p is 0-100."
+  [p xs]
+  (when (seq xs)
+    (let [sorted (vec (sort xs))
+          idx    (-> (* (/ p 100.0) (count sorted))
+                     Math/ceil
+                     int
+                     (max 1)
+                     dec)]
+      (sorted idx))))
+
+(let [[action reason] (should-push? (current-state))]
+  (when (= :push action)
+    (println "pushing:" reason)
+    (p/shell "git" "push" "--quiet" "origin" "main")))
