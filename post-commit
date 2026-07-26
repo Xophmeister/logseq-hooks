@@ -1,21 +1,26 @@
 #!/usr/bin/env bb
 
 (require '[babashka.process :as p]
-         '[clojure.string :as str])
+         '[clojure.string :as str]
+         '[clojure.edn :as edn]
+         '[babashka.fs :as fs])
 
 (def min-interval (* 60 60))   ; 1 hour
 (def max-interval (* 3 60 60)) ; 3 hours
-(def churn-threshold 150)
-(def file-threshold 15)
 
+(def churn-floor 150)
+(def file-floor  15)
+(def min-buckets 20)
 (def sample-size 400)
 
 (def remote-ref "refs/remotes/origin/main")
 
-(def stat-pathspec
+(def ^:private backup-exclusions
   [":(exclude)logseq/bak/**"
-   ":(exclude)logseq/.recycle/**"
-   ":(exclude)assets/**"])
+   ":(exclude)logseq/.recycle/**"])
+
+(def churn-exclusions (conj backup-exclusions ":(exclude)assets/**"))
+(def file-exclusions  backup-exclusions)
 
 (defn git
   "Runs git with `args`, returning trimmed stdout, or nill if git exited non-zero."
@@ -39,6 +44,18 @@
   []
   (when-let [ts (git "log" "-1" "--format=%ct" remote-ref)]
     (- (epoch-now) (parse-long ts))))
+
+(defn percentile
+  "Nearest-rank percentile of `xs`. p is 0-100."
+  [p xs]
+  (when (seq xs)
+    (let [sorted (vec (sort xs))
+          idx    (-> (* (/ p 100.0) (count sorted))
+                     Math/ceil
+                     int
+                     (max 1)
+                     dec)]
+      (sorted idx))))
 
 (defn- count-or-zero
   "--numstate reports `-` for binary files."
@@ -87,16 +104,53 @@
        (remove str/blank?)
        (map parse-log-block)))
 
+(defn window-buckets
+  "Sums commits into fixed-width time windows anchored at the newest commit.
+   Windows containing no commits are dropped; we only ever test when there is unpushed work."
+  [window-secs commits]
+  (when (seq commits)
+    (let [newest (apply max (map :ts commits))]
+      (->> commits
+           (group-by #(quot (- newest (:ts %)) window-secs))
+           vals
+           (map #(hash-map :churn (transduce (map :churn) + %)
+                           :files (transduce (map :files) + %)))))))
+
+(defn compute-thresholds []
+  (let [churn-buckets (window-buckets min-interval (sample-commits churn-exclusions))
+        file-buckets  (window-buckets min-interval (sample-commits file-exclusions))]
+    {:churn   (max churn-floor (or (percentile 90 (map :churn churn-buckets)) 0))
+     :files   (max file-floor  (or (percentile 90 (map :files file-buckets)) 0))
+     :n       (count churn-buckets)
+     :sampled (epoch-now)}))
+
+(def cache-ttl (* 24 60 60))
+(def cache-file (fs/file (git! "rev-parse" "--absolute-git-dir") "push-thresholds.edn"))
+
+(defn- fresh-cache []
+  (when (fs/exists? cache-file)
+    (let [age (- (epoch-now) (.getEpochSecond (fs/last-modified-time cache-file)))]
+      (when (< age cache-ttl)
+        (try
+          (edn/read-string (slurp cache-file))
+          (catch Exception _ nil))))))   ; corrupt or truncated; recompute
+
+(defn thresholds []
+  (or (fresh-cache)
+      (let [t (compute-thresholds)]
+        (spit cache-file (pr-str t))
+        t)))
+
 (defn should-push?
-  [{:keys [remote-age up-to-date? churn files]}]
+  [{:keys [remote-age up-to-date? churn files]} thresholds]
   (cond
-    (nil? remote-age)            [:push "no remote tracking ref"]
-    up-to-date?                  [:skip "already up to date"]
-    (>= remote-age max-interval) [:push "remote is stale"]
-    (< remote-age min-interval)  [:skip "pushed too recently"]
-    (>= churn churn-threshold)   [:push (str churn " lines changed")]
-    (>= files file-threshold)    [:push (str files " files changes")]
-    :else                        [:skip "below thresholds"]))
+    (nil? remote-age)               [:push "no remote tracking ref"]
+    up-to-date?                     [:skip "already up to date"]
+    (>= remote-age max-interval)    [:push "remote is stale"]
+    (< remote-age min-interval)     [:skip "pushed too recently"]
+    (>= churn (:churn thresholds))  [:push (format "%d lines (p90 %d)" churn (:churn thresholds))]
+    (>= files (:files thresholds))  [:push (format "%d files (p90 %d)" files (:files thresholds))]
+    :else                           [:skip "below thresholds"]))
 
 (defn current-state []
   (let [age (remote-age)]
@@ -105,19 +159,11 @@
                                      (git! "rev-parse" remote-ref)))}
            (if age (unpushed-stats) {:churn 0 :files 0}))))
 
-(defn percentile
-  "Nearest-rank percentile of `xs`. p is 0-100."
-  [p xs]
-  (when (seq xs)
-    (let [sorted (vec (sort xs))
-          idx    (-> (* (/ p 100.0) (count sorted))
-                     Math/ceil
-                     int
-                     (max 1)
-                     dec)]
-      (sorted idx))))
+(let [[action reason] (should-push? (current-state) (thresholds))]
+  (cond
+    (= :push action) (do
+      (println "pushing:" reason)
+      (p/shell "git" "push" "--quiet" "origin" "main"))
 
-(let [[action reason] (should-push? (current-state))]
-  (when (= :push action)
-    (println "pushing:" reason)
-    (p/shell "git" "push" "--quiet" "origin" "main")))
+    (= :skip action)
+      (println "skipping push:" reason)))
