@@ -1,26 +1,24 @@
 #!/usr/bin/env bb
 
-;;; Post-commit hook: pushes when enough work has accumulated, or when the
-;;; remote has gone stale. Thresholds are derived from recent history rather
-;;; than hard-coded, and cached in .git/ so the common path stays cheap.
-;;;
-;;; Note: GUI git clients often run hooks with a minimal PATH. If this fails to
-;;; run from one, replace the shebang with an absolute path to bb.
+;;; Post-commit hook: pushes when enough work has accumulated, or when
+;;; the remote has gone stale. Thresholds are derived from recent
+;;; history rather than hard-coded, and cached in .git/ so the common
+;;; path stays cheap.
 
 (require '[babashka.process :as p]
          '[babashka.fs :as fs]
          '[clojure.edn :as edn]
          '[clojure.string :as str])
 
-;;; ------------------------------------------------------------------ config
+;;; ------------------------------------------------------------- config
 
 (def remote-ref "refs/remotes/origin/main")
 
 (def min-interval (* 60 60))    ; never push more often than hourly
 (def max-interval (* 3 60 60))  ; always push at least every three hours
 
-;; Thresholds are the greater of these floors and the computed p90, so a young
-;; repo behaves like the original hard-coded version.
+;; Thresholds are the greater of these floors and the computed p90, so a
+;; young repo behaves like the original hard-coded version.
 (def churn-floor 150)  ; changed lines
 (def file-floor   15)  ; changed files (catches binary-heavy commits)
 
@@ -30,19 +28,20 @@
 (def cache-filename "push-thresholds.edn")
 (def cache-ttl (* 24 60 60))
 
-;; Logseq writes a backup of every file it touches, and pasted images land in
-;; assets/. Both correlate with real edits, so they'd quietly inflate the
-;; statistics. Excluded here as well as in .gitignore, since older commits may
-;; predate the ignore rules.
+;; Logseq writes a backup of every file it touches, and pasted images
+;; land in assets/. Both correlate with real edits, so they'd quietly
+;; inflate the statistics. Excluded here as well as in .gitignore, since
+;; older commits may predate the ignore rules.
 (def ^:private backup-exclusions
   [":(exclude)logseq/bak/**"
    ":(exclude)logseq/.recycle/**"])
 
-;; Binaries contribute no churn, but they are exactly the file-count spikes we
-;; want to catch — so assets are excluded from one sample and not the other.
+;; Binaries contribute no churn, but they are exactly the file-count
+;; spikes we want to catch; so assets are excluded from one sample and
+;; not the other.
 (def churn-exclusions (conj backup-exclusions ":(exclude)assets/**"))
 
-;;; ----------------------------------------------------------- git plumbing
+;;; ------------------------------------------------------- git plumbing
 
 (defn git
   "Runs git with `args`, returning trimmed stdout, or nil if git exited non-zero."
@@ -68,7 +67,7 @@
   (when-let [ts (git "log" "-1" "--format=%ct" remote-ref)]
     (- (epoch-now) (parse-long ts))))
 
-;;; -------------------------------------------------------------- numstat
+;;; ------------------------------------------------------------ numstat
 
 (defn- count-or-zero
   "--numstat reports `-` for binary files."
@@ -95,7 +94,7 @@
        (remove str/blank?)
        numstat-totals))
 
-;;; ----------------------------------------------------------- statistics
+;;; --------------------------------------------------------- statistics
 
 (defn percentile
   "Nearest-rank percentile of `xs`, where `pct` is 0-100. nil for an empty `xs`."
@@ -123,7 +122,7 @@
    matched by `exclusions`."
   [exclusions]
   ;; The NUL prefix delimits commit blocks: numstat output is otherwise
-  ;; indistinguishable from commit metadata once the two are interleaved.
+  ;; indistinguishable from commit metadata once the two are interleaved
   (let [log (apply git! "log"
                    (str "--max-count=" sample-size)
                    "--no-merges"
@@ -167,10 +166,11 @@
      :n       (count churn-buckets)
      :sampled (epoch-now)}))
 
-;;; ------------------------------------------------------- threshold cache
+;;; ---------------------------------------------------- threshold cache
 
-;; Lives inside .git/, so it needs no .gitignore entry — which matters here,
-;; since Logseq will sync anything it finds in the graph directory.
+;; Lives inside .git/, so it needs no .gitignore entry; which matters
+;; here, since Logseq will sync anything it finds in the graph
+;; directory.
 (def cache-file
   (delay (fs/file (git! "rev-parse" "--absolute-git-dir") cache-filename)))
 
@@ -182,8 +182,9 @@
     (when (and (fs/exists? f) (< (seconds-since-modified f) cache-ttl))
       (try
         (edn/read-string (slurp f))
-        ;; A hook killed mid-spit leaves truncated EDN, which would otherwise
-        ;; throw on every subsequent commit. Recompute instead.
+        ;; A hook killed mid-spit leaves truncated EDN, which would
+        ;; otherwise throw on every subsequent commit. Recompute
+        ;; instead.
         (catch Exception _ nil)))))
 
 (defn thresholds []
@@ -192,7 +193,7 @@
         (spit @cache-file (pr-str t))
         t)))
 
-;;; --------------------------------------------------------------- decision
+;;; ----------------------------------------------------------- decision
 
 (defn current-state []
   (let [age (remote-age)]
@@ -214,7 +215,7 @@
     (>= files (:files thresholds)) [:push (format "%d files (p90 %d)" files (:files thresholds))]
     :else                          [:skip "below thresholds"]))
 
-;;; ------------------------------------------------------------ entry point
+;;; -------------------------------------------------------- entry point
 
 (defn main []
   (let [[action reason] (decide (current-state) (thresholds))]
