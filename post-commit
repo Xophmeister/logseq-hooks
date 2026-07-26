@@ -1,44 +1,34 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env bb
 
-# TODO Set the churn/file thresholds around the median for the project,
-# once there is enough history to calculate them
-declare MIN_INTERVAL=$((60 * 60))       # never push more often than hourly
-declare MAX_INTERVAL=$((24 * 60 * 60))  # always push at least daily
-declare CHURN_THRESHOLD=150             # changed lines
-declare FILE_THRESHOLD=15               # changed files (catches binary-heavy commits)
+(require '[babashka.process :as p]
+         '[clojure.string :as str])
 
-declare REF="refs/remotes/origin/main"
+(defn git
+  "Runs git with `args`, returning trimmed stdout, or nill if git exited non-zero."
+  [& args]
+  (let [{:keys [out exit]} (p/sh (into ["git"] args))]
+    (when (zero? exit)
+      (str/trim out))))
 
-push() {
-  git push --quiet origin main
-  exit 0
-}
+(defn git!
+  "Like `git`, but throws if the command fails."
+  [& args]
+  (-> (p/sh (into ["git"] args))
+      p/check
+      :out
+      str/trim))
 
-# Fresh clone with no tracking ref; just push
-git rev-parse --verify --quiet "${REF}" >/dev/null || push
+(def remote-ref "refs/remotes/origin/main")
 
-# Already up to date
-[[ "$(git rev-parse HEAD)" == "$(git rev-parse "${REF}")" ]] && exit 0
+(defn epoch-now [] (.getEpochSecond (java.time.Instant/now)))
 
-declare REMOTE_AGE=$(( $(date +%s) - $(git log -1 --format=%ct "${REF}") ))
+(defn remote-age
+  "Seconds since the commit at `remote-ref`, or nil if the ref doesn't exist."
+  []
+  (when-let [ts (git "log" "-1" "--format=%ct" remote-ref)]
+    (- (epoch-now) (parse-long ts))))
 
-(( REMOTE_AGE >= MAX_INTERVAL )) && push
-(( REMOTE_AGE < MIN_INTERVAL )) && exit 0
-
-# --numstat reports "-" for binary files; skip those columns
-declare CHURN=$(
-  git diff --numstat "${REF}..HEAD" \
-  | awk '
-    {
-      if ($1 != "-") s += $1
-      if ($2 != "-") s += $2
-    }
-
-    END { print s+0 }
-  '
-)
-
-declare FILES=$(git diff --name-only "${REF}..HEAD" | wc -l)
-
-(( CHURN >= CHURN_THRESHOLD || FILES >= FILE_THRESHOLD )) && push
+(defn- count-or-zero
+  "--numstate reports `-` for binary files."
+  [s]
+  (if (= "-" s) 0 (parse-long s)))
