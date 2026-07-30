@@ -1,0 +1,119 @@
+#!/usr/bin/env bb
+
+;;; prepare-commit-msg: gives Logseq's auto-commits a message worth reading.
+;;;
+;;; Logseq commits every thirty minutes with a fixed message, which makes the
+;;; per-page commit history on the published graph useless. This hook does two
+;;; things to that history and nothing at all to commits made by hand:
+;;;
+;;;   1. Holds back an auto-commit whose staged changes do not yet amount to
+;;;      anything, by exiting non-zero. The changes stay staged and accumulate
+;;;      into the next attempt, so quiet half-hours no longer produce commits.
+;;;   2. Replaces the message on the ones that do go through, using a small
+;;;      model to describe the diff.
+;;;
+;;; It must never cost anyone a commit: every failure path falls through to
+;;; committing with whatever message was already there.
+
+(require '[babashka.classpath :refer [add-classpath]]
+         '[babashka.fs :as fs])
+
+;; git invokes this file in place, so the library sits beside it. Babashka does
+;; not put a script's directory on the classpath by default and the bb.edn in
+;; this repo is not consulted either: bb resolves that from the working
+;; directory, which for a hook is the graph root. Hence doing it explicitly.
+(add-classpath (str (fs/path (fs/parent (fs/absolutize *file*)) "src")))
+
+(require '[clojure.string :as str]
+         '[logseq-hooks.churn :as churn]
+         '[logseq-hooks.config :as config]
+         '[logseq-hooks.git :as git]
+         '[logseq-hooks.message :as message]
+         '[logseq-hooks.policy :as policy]
+         '[logseq-hooks.state :as state])
+
+;;; ------------------------------------------------------------------ marker
+
+;; Created when a commit is held back and removed by post-commit once one
+;; succeeds, so its age is how long the oldest deferred change has been
+;; waiting. Without it, a week of small edits would never be committed at all.
+(def pending-marker "logseq-deferred-commit")
+
+;;; ---------------------------------------------------------------- decision
+
+(defn auto-commit?
+  "True only for a message identical to Logseq's own.
+
+  The hook's `source` argument cannot be used for this: Logseq commits with
+  -m, which is indistinguishable from a hand-written `git commit -m`."
+  [msg-file]
+  (= (str/trim (slurp msg-file))
+     (config/value :auto-commit-message)))
+
+;;; ------------------------------------------------------------- staged diff
+
+(defn staged-diff
+  "The staged patch, capped at `max-bytes`. -U1 keeps a line of context, which
+  helps the model tell an edit from an insertion without much added bulk."
+  [exclusions max-bytes]
+  (let [raw (apply git/git! "diff" "--cached" "-U1" "--" (churn/pathspec exclusions))]
+    {:diff (cond-> raw (> (count raw) max-bytes) (subs 0 max-bytes))
+     :truncated? (> (count raw) max-bytes)}))
+
+(defn staged-stat [exclusions]
+  (apply git/git! "diff" "--cached" "--stat" "--" (churn/pathspec exclusions)))
+
+;;; -------------------------------------------------------------- entry point
+
+(defn rewrite! [msg-file exclusions words]
+  (let [entries (churn/staged-entries exclusions)
+        {:keys [diff truncated?]} (staged-diff exclusions (config/value :max-diff-bytes))
+        [text reason] (message/generate
+                       {:entries entries
+                        :words words
+                        :stat (staged-stat exclusions)
+                        :diff diff
+                        :truncated? truncated?
+                        :api-key (config/require-key :api-key)
+                        :model (config/value :model)
+                        :max-tokens (config/value :max-tokens)
+                        :api-timeout-ms (config/value :api-timeout-ms)})]
+    (println (str "logseq: " reason))
+    (if (config/value :dry-run)
+      (println (str "logseq: dry run, message would have been:\n" text))
+      (spit msg-file text))))
+
+(defn run [msg-file]
+  (let [exclusions (into churn/churn-exclusions
+                         (churn/exclude (config/value :excluded-paths)))
+        auto? (auto-commit? msg-file)
+        ;; Only measured for auto-commits: there is no point spending the git
+        ;; invocations on a commit we are not allowed to touch.
+        churn (if auto?
+                (churn/semantic-churn exclusions (config/value :ignored-properties))
+                {:blocks 0 :words 0})
+        [action reason] (policy/commit-decision
+                         (assoc churn
+                                :auto? auto?
+                                :deferred-for (state/mark-age pending-marker))
+                         @config/config)]
+    (case action
+      :leave 0
+      :rewrite (do (rewrite! msg-file exclusions (:words churn)) 0)
+      :defer (do (state/mark! pending-marker)
+                 (println (str "logseq: holding back commit; " reason))
+                 (if (config/value :dry-run) 0 1)))))
+
+(defn -main [& args]
+  (System/exit
+   (try
+     (run (first args))
+     (catch Exception e
+       ;; Deliberately permissive: a broken hook must not stand between someone
+       ;; and their notes. Commit with the original message and complain.
+       (binding [*out* *err*]
+         (println (str "logseq: prepare-commit-msg failed, committing as-is; "
+                       (ex-message e))))
+       0))))
+
+(apply -main *command-line-args*)

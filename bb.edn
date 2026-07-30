@@ -1,0 +1,15 @@
+;; Only consulted for development: `bb test`, or a REPL from this directory.
+;;
+;; The hooks themselves do not use it: bb resolves bb.edn from the working
+;; directory and git runs hooks from the root of the graph, not from here. Each
+;; hook puts src/ on the classpath itself.
+{:paths ["src" "test"]
+
+ :tasks
+ {test {:doc "Run the unit tests."
+        :requires ([clojure.test :as t]
+                   [logseq-hooks.message-test]
+                   [logseq-hooks.policy-test])
+        :task (let [{:keys [fail error]} (t/run-tests 'logseq-hooks.policy-test
+                                                      'logseq-hooks.message-test)]
+                (System/exit (if (zero? (+ fail error)) 0 1)))}}}

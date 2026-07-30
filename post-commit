@@ -1,134 +1,89 @@
 #!/usr/bin/env bb
 
-;;; Post-commit hook: pushes when enough work has accumulated, or when
-;;; the remote has gone stale. Thresholds are derived from recent
-;;; history rather than hard-coded, and cached in .git/ so the common
-;;; path stays cheap.
+;;; post-commit: pushes when enough work has accumulated, or when the remote
+;;; has gone stale. Thresholds are derived from recent history rather than
+;;; hard-coded and cached in .git/ so the common path stays cheap.
+;;;
+;;; Also clears the deferral marker set by prepare-commit-msg: a commit has now
+;;; happened, so nothing is being held back any more.
+
+(require '[babashka.classpath :refer [add-classpath]]
+         '[babashka.fs :as fs])
+
+(add-classpath (str (fs/path (fs/parent (fs/absolutize *file*)) "src")))
 
 (require '[babashka.process :as p]
-         '[babashka.fs :as fs]
-         '[clojure.edn :as edn]
-         '[clojure.string :as str])
-
-;;; ------------------------------------------------------------- config
-
-(def remote-ref "refs/remotes/origin/main")
-
-(def min-interval (* 60 60))    ; never push more often than hourly
-(def max-interval (* 3 60 60))  ; always push at least every three hours
-
-;; Thresholds are the greater of these floors and the computed p90, so a
-;; young repo behaves like the original hard-coded version.
-(def churn-floor 150)  ; changed lines
-(def file-floor   15)  ; changed files (catches binary-heavy commits)
-
-(def sample-size 400)  ; commits to sample when deriving thresholds
-(def min-buckets  20)  ; below this, percentiles aren't meaningful; use floors
+         '[clojure.string :as str]
+         '[logseq-hooks.churn :as churn]
+         '[logseq-hooks.config :as config]
+         '[logseq-hooks.git :as git]
+         '[logseq-hooks.policy :as policy]
+         '[logseq-hooks.state :as state])
 
 (def cache-filename "push-thresholds.edn")
-(def cache-ttl (* 24 60 60))
+(def pending-marker "logseq-deferred-commit")
 
-;; Logseq writes a backup of every file it touches, and pasted images
-;; land in assets/. Both correlate with real edits, so they'd quietly
-;; inflate the statistics. Excluded here as well as in .gitignore, since
-;; older commits may predate the ignore rules.
-(def ^:private backup-exclusions
-  [":(exclude)logseq/bak/**"
-   ":(exclude)logseq/.recycle/**"])
+(defn remote-ref []
+  (format "refs/remotes/%s/%s" (config/value :push :remote) (config/value :push :branch)))
 
-;; Binaries contribute no churn, but they are exactly the file-count
-;; spikes we want to catch; so assets are excluded from one sample and
-;; not the other.
-(def churn-exclusions (conj backup-exclusions ":(exclude)assets/**"))
+;;; ------------------------------------------------------------ git plumbing
 
-;;; ------------------------------------------------------- git plumbing
+(defn churn-exclusions []
+  (into churn/churn-exclusions (churn/exclude (config/value :excluded-paths))))
 
-(defn git
-  "Runs git with `args`, returning trimmed stdout, or nil if git exited non-zero."
-  [& args]
-  (let [{:keys [out exit]} (p/sh (into ["git"] args))]
-    (when (zero? exit)
-      (str/trim out))))
-
-(defn git!
-  "Like `git`, but throws if the command fails."
-  [& args]
-  (-> (p/sh (into ["git"] args))
-      p/check
-      :out
-      str/trim))
-
-(defn epoch-now []
-  (.getEpochSecond (java.time.Instant/now)))
+(defn file-exclusions []
+  (into churn/backup-exclusions (churn/exclude (config/value :excluded-paths))))
 
 (defn remote-age
-  "Seconds since the commit at `remote-ref`, or nil if the ref doesn't exist."
+  "Seconds since the commit at the remote ref, or nil if the ref doesn't exist."
   []
-  (when-let [ts (git "log" "-1" "--format=%ct" remote-ref)]
-    (- (epoch-now) (parse-long ts))))
-
-;;; ------------------------------------------------------------ numstat
-
-(defn- count-or-zero
-  "--numstat reports `-` for binary files."
-  [s]
-  (if (= "-" s) 0 (parse-long s)))
-
-(defn numstat-totals
-  "Sums `added\tdeleted\tpath` lines into {:churn n :files n}.
-   Binary files contribute a file but no churn."
-  [lines]
-  (reduce (fn [acc line]
-            (let [[added deleted] (str/split line #"\t")]
-              (-> acc
-                  (update :files inc)
-                  (update :churn + (count-or-zero added) (count-or-zero deleted)))))
-          {:churn 0 :files 0}
-          lines))
+  (when-let [ts (git/git "log" "-1" "--format=%ct" (remote-ref))]
+    (- (git/epoch-now) (parse-long ts))))
 
 (defn unpushed-stats
   "Totals for everything on HEAD that isn't on the remote."
   []
-  (->> (git! "diff" "--numstat" (str remote-ref "..HEAD"))
+  (->> (apply git/git! "diff" "--numstat" (str (remote-ref) "..HEAD")
+              "--" (churn/pathspec (churn-exclusions)))
        str/split-lines
-       (remove str/blank?)
-       numstat-totals))
+       churn/parse-numstat
+       churn/totals))
 
-;;; --------------------------------------------------------- statistics
+;;; --------------------------------------------------------------- statistics
 
 (defn percentile
   "Nearest-rank percentile of `xs`, where `pct` is 0-100. nil for an empty `xs`."
   [pct xs]
   (when (seq xs)
     (let [sorted (vec (sort xs))
-          idx    (-> (* (/ pct 100.0) (count sorted))
-                     Math/ceil
-                     int
-                     (max 1)
-                     dec)]
+          idx (-> (* (/ pct 100.0) (count sorted))
+                  Math/ceil
+                  int
+                  (max 1)
+                  dec)]
       (sorted idx))))
 
 (defn- parse-log-block
   "A block is `<hash> <timestamp>` followed by numstat lines."
   [block]
   (let [[header & stat-lines] (str/split-lines block)
-        [hash ts]             (str/split header #" ")]
-    (assoc (numstat-totals (remove str/blank? stat-lines))
+        [hash ts] (str/split header #" ")]
+    (assoc (churn/totals (churn/parse-numstat stat-lines))
            :hash hash
-           :ts   (parse-long ts))))
+           :ts (parse-long ts))))
 
 (defn sample-commits
   "Per-commit {:hash :ts :churn :files} for recent history, ignoring paths
    matched by `exclusions`."
   [exclusions]
   ;; The NUL prefix delimits commit blocks: numstat output is otherwise
-  ;; indistinguishable from commit metadata once the two are interleaved
-  (let [log (apply git! "log"
-                   (str "--max-count=" sample-size)
+  ;; indistinguishable from commit metadata once the two are interleaved.
+  (let [log (apply git/git! "log"
+                   (str "--max-count=" (config/value :push :sample-size))
                    "--no-merges"
                    "--numstat"
                    "--format=%x00%H %ct"
-                   "--" exclusions)]
+                   "--" (churn/pathspec exclusions))]
     (->> (str/split log #"\x00")
          (remove str/blank?)
          (map parse-log-block))))
@@ -149,79 +104,54 @@
                            :files (transduce (map :files) + %)))))))
 
 (defn- p90-or-floor
-  "p90 of `k` across `buckets`, floored at `floor`. Falls back to `floor`
-   alone until there's enough history for a percentile to mean anything."
+  "p90 of `k` across `buckets`, floored at `floor`. Falls back to `floor` alone
+   until there's enough history for a percentile to mean anything."
   [floor k buckets]
-  (if (>= (count buckets) min-buckets)
+  (if (>= (count buckets) (config/value :push :min-buckets))
     (max floor (percentile 90 (map k buckets)))
     floor))
 
 (defn compute-thresholds []
-  (let [churn-buckets (window-buckets min-interval (sample-commits churn-exclusions))
-        file-buckets  (window-buckets min-interval (sample-commits backup-exclusions))]
-    {:churn   (p90-or-floor churn-floor :churn churn-buckets)
-     :files   (p90-or-floor file-floor  :files file-buckets)
+  (let [window (config/value :push :min-interval)
+        churn-buckets (window-buckets window (sample-commits (churn-exclusions)))
+        file-buckets (window-buckets window (sample-commits (file-exclusions)))]
+    {:churn (p90-or-floor (config/value :push :churn-floor) :churn churn-buckets)
+     :files (p90-or-floor (config/value :push :file-floor) :files file-buckets)
      ;; Diagnostic only: sample size behind the numbers above. Inspect the
      ;; cache file by hand if a threshold looks wrong.
-     :n       (count churn-buckets)
-     :sampled (epoch-now)}))
-
-;;; ---------------------------------------------------- threshold cache
-
-;; Lives inside .git/, so it needs no .gitignore entry; which matters
-;; here, since Logseq will sync anything it finds in the graph
-;; directory.
-(def cache-file
-  (delay (fs/file (git! "rev-parse" "--absolute-git-dir") cache-filename)))
-
-(defn- seconds-since-modified [f]
-  (- (epoch-now) (quot (.toMillis (fs/last-modified-time f)) 1000)))
-
-(defn- fresh-cache []
-  (let [f @cache-file]
-    (when (and (fs/exists? f) (< (seconds-since-modified f) cache-ttl))
-      (try
-        (edn/read-string (slurp f))
-        ;; A hook killed mid-spit leaves truncated EDN, which would
-        ;; otherwise throw on every subsequent commit. Recompute
-        ;; instead.
-        (catch Exception _ nil)))))
+     :n (count churn-buckets)
+     :sampled (git/epoch-now)}))
 
 (defn thresholds []
-  (or (fresh-cache)
-      (let [t (compute-thresholds)]
-        (spit @cache-file (pr-str t))
-        t)))
+  (state/cached cache-filename (config/value :push :cache-ttl) compute-thresholds))
 
-;;; ----------------------------------------------------------- decision
+;;; ------------------------------------------------------------------ decision
 
 (defn current-state []
   (let [age (remote-age)]
-    (merge {:remote-age  age
-            :up-to-date? (and age (= (git! "rev-parse" "HEAD")
-                                     (git! "rev-parse" remote-ref)))}
+    (merge {:remote-age age
+            :up-to-date? (and age (= (git/git! "rev-parse" "HEAD")
+                                     (git/git! "rev-parse" (remote-ref))))}
            (if age (unpushed-stats) {:churn 0 :files 0}))))
 
-(defn decide
-  "Returns [:push reason] or [:skip reason]. Pure: both arguments are plain
-   maps, so this can be exercised at the REPL without touching a repo."
-  [{:keys [remote-age up-to-date? churn files]} thresholds]
-  (cond
-    (nil? remote-age)              [:push "no remote tracking ref"]
-    up-to-date?                    [:skip "already up to date"]
-    (>= remote-age max-interval)   [:push "remote is stale"]
-    (< remote-age min-interval)    [:skip "pushed too recently"]
-    (>= churn (:churn thresholds)) [:push (format "%d lines (p90 %d)" churn (:churn thresholds))]
-    (>= files (:files thresholds)) [:push (format "%d files (p90 %d)" files (:files thresholds))]
-    :else                          [:skip "below thresholds"]))
+;;; --------------------------------------------------------------- entry point
 
-;;; -------------------------------------------------------- entry point
+(defn push! []
+  ;; git ignores this hook's exit status, so a failed push must not surface as
+  ;; an unhandled exception: Logseq would show the stack trace as an error.
+  (let [{:keys [exit err]} (p/sh ["git" "push" "--quiet"
+                                  (config/value :push :remote)
+                                  (config/value :push :branch)])]
+    (when-not (zero? exit)
+      (println "push failed, will retry after the next commit:" (str/trim (str err))))))
 
-(defn main []
-  (let [[action reason] (decide (current-state) (thresholds))]
+(defn -main []
+  ;; A commit exists, so nothing is being held back any more.
+  (state/unmark! pending-marker)
+  (let [[action reason] (policy/push-decision (current-state) (thresholds) (:push @config/config))]
     (case action
-      :push (do (println "pushing:" reason)
-                (p/shell "git" "push" "--quiet" "origin" "main"))
+      :push (do (println "pushing:" reason) (push!))
       :skip (println "skipping push:" reason))))
 
-(main)
+(-main)
+(System/exit 0)

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+# Wires these hooks into the Logseq graph repository this repo is a submodule
+# of. Idempotent: safe to re-run after updating the submodule pointer.
+
+set -euo pipefail
+
+hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+graph_dir="$(git -C "$hooks_dir" rev-parse --show-superproject-working-tree)"
+if [[ -z "$graph_dir" ]]; then
+    cat >&2 <<EOF
+error: this repository is not a submodule of anything.
+
+Add it to your graph repository first, then run this script from there:
+
+    git submodule add <url> .hooks
+    .hooks/bin/install
+EOF
+    exit 1
+fi
+
+git_dir="$(git -C "$graph_dir" rev-parse --absolute-git-dir)"
+# core.hooksPath is resolved relative to the top of the working tree, so it has
+# to be stored that way rather than as the absolute path we happen to have.
+rel_hooks="$(realpath --relative-to="$graph_dir" "$hooks_dir")"
+config_file="$git_dir/logseq-hooks.edn"
+
+chmod +x "$hooks_dir/prepare-commit-msg" "$hooks_dir/post-commit"
+git -C "$graph_dir" config core.hooksPath "$rel_hooks"
+echo "core.hooksPath set to $rel_hooks"
+
+# The config lives in the git directory rather than the working tree because it
+# holds an API key: git does not track it and Logseq does not sync it. The
+# corollary is that it does not survive a fresh clone, hence this script.
+if [[ -e "$config_file" ]]; then
+    echo "config already present at $config_file, left alone"
+else
+    install -m 600 "$hooks_dir/logseq-hooks.example.edn" "$config_file"
+    echo "config created at $config_file; add your API key to it"
+fi
+
+if ! command -v bb >/dev/null 2>&1; then
+    echo "warning: bb is not on this PATH; the hooks will not run without it" >&2
+    echo "         check the PATH Logseq itself is started with, not just yours" >&2
+fi
+
+# Logseq writes a backup of every file it touches. Left tracked, these dominate
+# every diff and distort both churn measures.
+gitignore="$graph_dir/.gitignore"
+for pattern in "logseq/bak/" "logseq/.recycle/"; do
+    if ! grep -qxF "$pattern" "$gitignore" 2>/dev/null; then
+        echo "suggestion: add '$pattern' to $gitignore"
+    fi
+done
+
+# The default assumes the conventional mount point; say so if it is wrong,
+# rather than silently counting submodule bumps as notes.
+if [[ "$rel_hooks" != ".hooks" ]]; then
+    echo "note: mounted at $rel_hooks, so set :excluded-paths [\"$rel_hooks\"] in the config"
+fi

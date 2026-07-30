@@ -1,0 +1,37 @@
+;; Copy to .git/logseq-hooks.edn and chmod 600.
+;;
+;; Kept inside .git/ rather than the working tree so that it holds an API key
+;; without Logseq syncing it or git tracking it. The trade-off is that a fresh
+;; clone has no configuration and the hooks will say so.
+;;
+;; Every key is optional except :api-key. Anything omitted falls back to
+;; logseq-hooks.config/defaults; only override what you actually want to change.
+
+{;; Must match Logseq's own commit message exactly. Commits with any other
+ ;; message are left completely alone.
+ :auto-commit-message "Auto saved by Logseq"
+
+ ;; Either of these is enough to let an auto-commit through. Words catch a long
+ ;; new note (few blocks, many words); blocks catch an edit swept across many
+ ;; pages (many blocks, few words). Start high and lower them: too low and you
+ ;; are back to noise, too high and :max-defer-seconds does all the work.
+ :word-threshold 120
+ :block-threshold 20
+
+ ;; Commit anyway once changes have been held back this long.
+ :max-defer-seconds 14400  ; 2 hrs
+
+ ;; Logseq churn that carries no meaning. Add to this if you find other
+ ;; properties being rewritten behind your back.
+ :ignored-properties #{"collapsed" "id"}
+
+ ;; Anthropic API key and model.
+ :api-key "sk-ant-..."
+ :model "claude-haiku-4-5-20251001"
+ :api-timeout-ms 5000
+
+ ;; Set true to see decisions and generated messages without changing anything.
+ :dry-run false
+
+ :push {:remote "origin"
+        :branch "main"}}
