@@ -68,6 +68,10 @@
     "- Optional body after one blank line: up to three short lines, one per page or theme."
     "  Omit the body entirely if the subject line already says everything."
     "- Describe only what the diff shows. Do not speculate about intent or invent detail."
+    "- Do not prettify the text with typographic embellishment the source does not use. When writing"
+    "  in English or another Latin-script language, that means straight quotes rather than smart quotes,"
+    "  a plain hyphen rather than en or em dashes, and three dots rather than an ellipsis character."
+    "  Otherwise follow the ordinary punctuation conventions of the language you are writing in."
     "- Output the commit message as plain text and nothing else: no preamble, no code fences, no quoting."]))
 
 (defn build-prompt
