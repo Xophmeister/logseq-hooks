@@ -41,6 +41,11 @@
    :max-tokens 400
    :api-timeout-ms 5000
 
+   ;; Natural language and variant the commit message is written in. Defaults
+   ;; to the author's; set your own, or nil to leave it to the model. The model
+   ;; is asked to follow the punctuation conventions of whatever this names.
+   :language "British English"
+
    ;; Ceiling on the diff sent to the API. A commit that has been accumulating
    ;; for hours can be very large and a subject line does not need all of it.
    :max-diff-bytes 40000

@@ -24,11 +24,36 @@
     (is (<= (count subject) message/subject-limit))
     (is (str/ends-with? subject "word") "should not cut mid-word")))
 
+(deftest an-overlong-subject-ends-on-a-clause-boundary
+  (testing "cut at the last comma in budget rather than trailing off after it"
+    (is (= "Link \"Peer review\" section headings across contributor pages\n"
+           (message/sanitise
+            "Link \"Peer review\" section headings across contributor pages, mark them reviewed")))))
+
+(deftest an-overlong-subject-does-not-end-on-a-dangling-connective
+  (testing "an early colon is a page separator, not a clause boundary, so keep it"
+    (is (= "Facundo Dominguez: add detailed peer feedback on strategic thinking\n"
+           (message/sanitise
+            "Facundo Dominguez: add detailed peer feedback on strategic thinking and reviewing")))))
+
 (deftest unusable-output-yields-nil
   (testing "so that generate can fall back rather than commit an empty message"
     (is (nil? (message/sanitise "")))
     (is (nil? (message/sanitise "   \n\n  ")))
     (is (nil? (message/sanitise nil)))))
+
+;;; ------------------------------------------------------------- system prompt
+
+(deftest the-language-rule-is-included-when-configured
+  (is (str/includes? (message/system-prompt {:language "British English"})
+                     "Write the commit message in British English.")))
+
+(deftest the-language-rule-is-omitted-when-blank
+  (testing "so a nil or empty :language leaves the variant to the model"
+    (is (not (str/includes? (message/system-prompt {:language nil})
+                            "Write the commit message in")))
+    (is (not (str/includes? (message/system-prompt {:language "  "})
+                            "Write the commit message in")))))
 
 ;;; --------------------------------------------------------------- page naming
 
