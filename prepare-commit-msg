@@ -77,7 +77,8 @@
                         :api-key (config/require-key :api-key)
                         :model (config/value :model)
                         :max-tokens (config/value :max-tokens)
-                        :api-timeout-ms (config/value :api-timeout-ms)})]
+                        :api-timeout-ms (config/value :api-timeout-ms)
+                        :language (config/value :language)})]
     (println (str "logseq: " reason))
     (if (config/value :dry-run)
       (println (str "logseq: dry run, message would have been:\n" text))

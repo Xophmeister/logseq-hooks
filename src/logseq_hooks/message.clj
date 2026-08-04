@@ -50,29 +50,38 @@
 
 ;;; ----------------------------------------------------------------- prompt
 
-(def system-prompt
+(defn system-prompt
+  "The system turn. `:language` names the natural language and variant to write
+  in, for example \"British English\"; when blank the model's own default is
+  left to stand. It is a config value rather than a constant because this is a
+  public repo and not everyone writing English writes the same English."
+  [{:keys [language]}]
   (str/join
    "\n"
-   ["You write git commit messages for a personal Logseq knowledge graph that is published as a website."
-    "Each published page links to its own commit history, so the subject line is often the only description"
-    "a reader ever sees of what changed on that page."
-    ""
-    "Rules:"
-    "- First line: a complete, self-contained phrase of at most 72 characters, no trailing full stop."
-    "  Put any further detail in the body; never let the subject run past 72 characters and trail off."
-    "- Name the page or pages affected, using the page title rather than the file path, then say"
-    "  substantively what changed. Refer to journal pages by their date."
-    "- Prefer the specific over the general: 'Topiary: notes on tree-sitter query precedence',"
-    "  not 'Update Topiary notes'. Never use filler such as 'Auto saved', 'Update' or 'Various changes'."
-    "- If several pages changed, lead with the most substantial one and mention the rest in the body."
-    "- Optional body after one blank line: up to three short lines, one per page or theme."
-    "  Omit the body entirely if the subject line already says everything."
-    "- Describe only what the diff shows. Do not speculate about intent or invent detail."
-    "- Do not prettify the text with typographic embellishment the source does not use. When writing"
-    "  in English or another Latin-script language, that means straight quotes rather than smart quotes,"
-    "  a plain hyphen rather than en or em dashes, and three dots rather than an ellipsis character."
-    "  Otherwise follow the ordinary punctuation conventions of the language you are writing in."
-    "- Output the commit message as plain text and nothing else: no preamble, no code fences, no quoting."]))
+   (cond-> ["You write git commit messages for a personal Logseq knowledge graph that is published as a website."
+            "Each published page links to its own commit history, so the subject line is often the only description"
+            "a reader ever sees of what changed on that page."
+            ""
+            "Rules:"
+            "- First line: a complete, self-contained phrase of at most 72 characters, no trailing full stop."
+            "  Put any further detail in the body; never let the subject run past 72 characters and trail off."
+            "- Name the page or pages affected, using the page title rather than the file path, then say"
+            "  substantively what changed. Refer to journal pages by their date."
+            "- Prefer the specific over the general: 'Topiary: notes on tree-sitter query precedence',"
+            "  not 'Update Topiary notes'. Never use filler such as 'Auto saved', 'Update' or 'Various changes'."
+            "- If several pages changed, lead with the most substantial one and mention the rest in the body."
+            "- Optional body after one blank line: up to three short lines, one per page or theme."
+            "  Omit the body entirely if the subject line already says everything."
+            "- Describe only what the diff shows. Do not speculate about intent or invent detail."]
+     (not (str/blank? language))
+     (conj (str "- Write the commit message in " language "."))
+
+     true
+     (into ["- Do not prettify the text with typographic embellishment the source does not use. When writing"
+            "  in English or another Latin-script language, that means straight quotes rather than smart quotes,"
+            "  a plain hyphen rather than en or em dashes, and three dots rather than an ellipsis character."
+            "  Otherwise follow the ordinary punctuation conventions of the language you are writing in."
+            "- Output the commit message as plain text and nothing else: no preamble, no code fences, no quoting."]))))
 
 (defn build-prompt
   "Assembles the user turn. `diff` is truncated by the caller; when it has been,
@@ -153,13 +162,13 @@
 (defn generate
   "Returns [message reason]. Falls back to `fallback-subject` on any failure,
   with the reason carried through so the hook can log why."
-  [{:keys [entries words stat diff truncated? api-key model max-tokens api-timeout-ms]}]
+  [{:keys [entries words stat diff truncated? api-key model max-tokens api-timeout-ms language]}]
   (let [{:keys [text error]} (anthropic/message
                               {:api-key api-key
                                :model model
                                :max-tokens max-tokens
                                :timeout-ms api-timeout-ms
-                               :system system-prompt
+                               :system (system-prompt {:language language})
                                :prompt (build-prompt {:stat stat
                                                       :diff diff
                                                       :truncated? truncated?})})]

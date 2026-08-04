@@ -30,6 +30,10 @@
  :model "claude-haiku-4-5-20251001"
  :api-timeout-ms 5000
 
+ ;; Natural language and variant to write commit messages in. Set nil to leave
+ ;; it to the model. Defaults to "British English".
+ :language "British English"
+
  ;; Set true to see decisions and generated messages without changing anything.
  :dry-run false
 

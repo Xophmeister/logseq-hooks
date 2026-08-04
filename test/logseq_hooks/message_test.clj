@@ -42,6 +42,19 @@
     (is (nil? (message/sanitise "   \n\n  ")))
     (is (nil? (message/sanitise nil)))))
 
+;;; ------------------------------------------------------------- system prompt
+
+(deftest the-language-rule-is-included-when-configured
+  (is (str/includes? (message/system-prompt {:language "British English"})
+                     "Write the commit message in British English.")))
+
+(deftest the-language-rule-is-omitted-when-blank
+  (testing "so a nil or empty :language leaves the variant to the model"
+    (is (not (str/includes? (message/system-prompt {:language nil})
+                            "Write the commit message in")))
+    (is (not (str/includes? (message/system-prompt {:language "  "})
+                            "Write the commit message in")))))
+
 ;;; --------------------------------------------------------------- page naming
 
 (deftest journal-files-are-named-by-date
