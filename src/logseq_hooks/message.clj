@@ -58,7 +58,8 @@
     "a reader ever sees of what changed on that page."
     ""
     "Rules:"
-    "- First line: at most 72 characters, no trailing full stop."
+    "- First line: a complete, self-contained phrase of at most 72 characters, no trailing full stop."
+    "  Put any further detail in the body; never let the subject run past 72 characters and trail off."
     "- Name the page or pages affected, using the page title rather than the file path, then say"
     "  substantively what changed. Refer to journal pages by their date."
     "- Prefer the specific over the general: 'Topiary: notes on tree-sitter query precedence',"
@@ -84,12 +85,42 @@
       (str/replace #"(?m)^\s*```[a-zA-Z]*\s*$" "")
       str/trim))
 
+;; A short word left dangling at the end of a hard cut reads as truncation
+;; ("... strategic thinking and"). Dropping it leaves a complete phrase.
+(def ^:private trailing-connectives
+  #{"and" "or" "but" "with" "to" "of" "on" "in" "for" "the" "a" "an"
+    "at" "by" "as" "from" "into" "over" "per"})
+
+(defn- tidy-tail
+  "Strip a trailing comma or dangling connective left by a hard cut, so a
+  shortened subject still reads as a finished phrase."
+  [s]
+  (loop [s (str/trimr s)]
+    (cond
+      (str/ends-with? s ",")
+      (recur (str/trimr (subs s 0 (dec (count s)))))
+
+      (when-let [[_ word] (re-find #"\s(\S+)$" s)]
+        (contains? trailing-connectives (str/lower-case word)))
+      (recur (str/replace s #"\s+\S+$" ""))
+
+      :else s)))
+
 (defn- shorten [s limit]
   (if (<= (count s) limit)
     s
-    ;; Trim back to a word boundary rather than cutting mid-word.
-    (let [cut (subs s 0 limit)]
-      (str/replace cut #"\s+\S*$" ""))))
+    ;; Prefer to end on a clause boundary (comma, semicolon, colon) in the back
+    ;; half of the budget, so an overlong line reads as complete rather than
+    ;; chopped. Failing that, fall back to a word boundary. Either way, tidy any
+    ;; dangling tail left behind.
+    (let [cut (subs s 0 limit)
+          clause (->> [\, \; \:]
+                      (keep #(str/last-index-of cut %))
+                      (apply max -1))]
+      (tidy-tail
+       (if (>= clause (quot limit 2))
+         (subs cut 0 clause)
+         (str/replace cut #"\s+\S*$" ""))))))
 
 (defn sanitise
   "Coerces model output into a well-formed commit message, or nil if there is

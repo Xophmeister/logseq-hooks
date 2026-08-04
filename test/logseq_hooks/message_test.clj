@@ -24,6 +24,18 @@
     (is (<= (count subject) message/subject-limit))
     (is (str/ends-with? subject "word") "should not cut mid-word")))
 
+(deftest an-overlong-subject-ends-on-a-clause-boundary
+  (testing "cut at the last comma in budget rather than trailing off after it"
+    (is (= "Link \"Peer review\" section headings across contributor pages\n"
+           (message/sanitise
+            "Link \"Peer review\" section headings across contributor pages, mark them reviewed")))))
+
+(deftest an-overlong-subject-does-not-end-on-a-dangling-connective
+  (testing "an early colon is a page separator, not a clause boundary, so keep it"
+    (is (= "Facundo Dominguez: add detailed peer feedback on strategic thinking\n"
+           (message/sanitise
+            "Facundo Dominguez: add detailed peer feedback on strategic thinking and reviewing")))))
+
 (deftest unusable-output-yields-nil
   (testing "so that generate can fall back rather than commit an empty message"
     (is (nil? (message/sanitise "")))
