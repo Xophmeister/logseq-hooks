@@ -5,6 +5,50 @@
 
 set -euo pipefail
 
+usage() {
+    cat <<EOF
+usage: bin/install [--hooks-path <dir>]
+
+  --hooks-path <dir>  Point core.hooksPath at <dir> rather than at this repo.
+
+                      git runs exactly one hooks directory, so a graph that
+                      wants a hook of its own cannot simply add one here.
+                      Instead it owns <dir> -- holding its own hooks, plus
+                      thin wrappers that hand over to the scripts in this
+                      repo -- and this flag stops a re-run of the installer
+                      from taking that directory back.
+
+                      Relative to the graph root, or absolute.
+EOF
+}
+
+hooks_path_override=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --hooks-path)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --hooks-path needs a directory" >&2
+                exit 1
+            fi
+            hooks_path_override="$2"
+            shift 2
+            ;;
+        --hooks-path=*)
+            hooks_path_override="${1#*=}"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
 hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 graph_dir="$(git -C "$hooks_dir" rev-parse --show-superproject-working-tree)"
@@ -26,36 +70,84 @@ git_dir="$(git -C "$graph_dir" rev-parse --absolute-git-dir)"
 rel_hooks="$(realpath --relative-to="$graph_dir" "$hooks_dir")"
 config_file="$git_dir/logseq-hooks.edn"
 
+# Where git is told to look, which is this repo unless the graph has claimed
+# that job for itself.
+if [[ -n "$hooks_path_override" ]]; then
+    case "$hooks_path_override" in
+        /*) override_dir="$hooks_path_override" ;;
+        *)  override_dir="$graph_dir/$hooks_path_override" ;;
+    esac
+    if [[ ! -d "$override_dir" ]]; then
+        echo "error: --hooks-path $hooks_path_override is not a directory" >&2
+        exit 1
+    fi
+    hooks_path="$(realpath --relative-to="$graph_dir" "$override_dir")"
+    if [[ "$hooks_path" == ".." || "$hooks_path" == ../* ]]; then
+        echo "error: --hooks-path must be inside the graph at $graph_dir" >&2
+        exit 1
+    fi
+else
+    hooks_path="$rel_hooks"
+fi
+
 chmod +x "$hooks_dir/prepare-commit-msg" "$hooks_dir/post-commit"
-git -C "$graph_dir" config core.hooksPath "$rel_hooks"
-echo "core.hooksPath set to $rel_hooks"
+git -C "$graph_dir" config core.hooksPath "$hooks_path"
+echo "core.hooksPath set to $hooks_path"
+
+# Handing the directory over means the graph owns the files git actually runs,
+# so the scripts here are reached only if something there delegates to them.
+# Nothing can verify that it does; the least we can do is notice the files are
+# missing entirely, rather than leave these hooks silently dead.
+if [[ "$hooks_path" != "$rel_hooks" ]]; then
+    for hook in prepare-commit-msg post-commit; do
+        if [[ ! -e "$graph_dir/$hooks_path/$hook" ]]; then
+            echo "warning: no $hook in $hooks_path, so that hook will not run" >&2
+            echo "         until something there hands over to $rel_hooks/$hook" >&2
+        fi
+    done
+fi
 
 # The config lives in the git directory rather than the working tree because it
 # holds an API key: git does not track it and Logseq does not sync it. The
 # corollary is that it does not survive a fresh clone, hence this script.
 example="$hooks_dir/logseq-hooks.example.edn"
-placeholder="@HOOKS_PATH@"
+placeholder="@EXCLUDED_PATHS@"
+
+# Neither this repo nor the directory git runs hooks from holds notes, so both
+# want excluding -- unless one contains the other, when the outer one already
+# covers it and naming both would only be noise.
+excluded=("$hooks_path")
+if [[ "$rel_hooks" != "$hooks_path" && "$rel_hooks" != "$hooks_path"/* ]]; then
+    excluded+=("$rel_hooks")
+fi
 
 if [[ -e "$config_file" ]]; then
     echo "config already present at $config_file, left alone"
-    # Only a freshly seeded config gets the mount point written into it, and
-    # the library no longer guesses one. So an older config, or one written
-    # before the submodule was moved, would quietly count pointer bumps as
-    # notes. Grepping the text is crude, but this only offers advice.
-    if ! grep -qF "\"$rel_hooks\"" "$config_file"; then
-        echo "note: $config_file does not mention $rel_hooks; add it to" \
-             ":excluded-paths or submodule bumps count towards churn"
-    fi
+    # Only a freshly seeded config gets these paths written into it, and the
+    # library no longer guesses any. So an older config, or one written before
+    # things were moved around, would quietly count pointer bumps as notes.
+    # Grepping the text is crude, but this only offers advice.
+    for path in "${excluded[@]}"; do
+        if ! grep -qF "\"$path\"" "$config_file"; then
+            echo "note: $config_file does not mention $path; add it to" \
+                 ":excluded-paths or changes there count towards churn"
+        fi
+    done
 else
     if ! grep -qF "$placeholder" "$example"; then
         echo "error: $placeholder is missing from $example, so the mount" >&2
         echo "       point cannot be seeded; the two have drifted apart" >&2
         exit 1
     fi
+    excluded_edn=""
+    for path in "${excluded[@]}"; do
+        excluded_edn+="${excluded_edn:+ }\"$path\""
+    done
+
     # Created empty and private first: the redirection below leaves the mode
     # alone, so the file is never briefly readable by anyone else.
     install -m 600 /dev/null "$config_file"
-    awk -v path="$rel_hooks" -v ph="$placeholder" '{ gsub(ph, path); print }' \
+    awk -v paths="$excluded_edn" -v ph="$placeholder" '{ gsub(ph, paths); print }' \
         "$example" > "$config_file"
     echo "config created at $config_file; add your API key to it"
 fi

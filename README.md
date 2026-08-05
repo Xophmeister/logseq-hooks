@@ -47,15 +47,40 @@ git submodule add <url> .hooks
 Then put your API key in `.git/logseq-hooks.edn`. The installer is
 idempotent, so re-run it after a fresh clone or a submodule bump. It
 sets `core.hooksPath`, seeds the config from the example -- substituting
-wherever you actually mounted this repo into `:excluded-paths` -- and
-tells you what it couldn't do for you.
+the paths the hooks actually live at into `:excluded-paths` -- and tells
+you what it couldn't do for you.
 
 Note that the config is overlaid on the defaults shallowly, `:push`
 aside, so a collection you set replaces the default rather than adding
 to it. Adding a generated file to `:excluded-paths` means listing the
-mount point alongside it, not on its own.
+seeded paths alongside it, not on their own.
 
 Requires `bb` on the `PATH` that Logseq is started with.
+
+### Hooks of your own
+
+git runs exactly one hooks directory, so a graph that wants a hook these
+two do not provide cannot simply drop it in here. Give the graph its own
+directory instead, holding that hook plus a wrapper per hook of ours
+that hands over to the real thing:
+
+```sh
+# .hooks/post-commit, alongside a pre-commit of the graph's own
+exec "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/logseq-hooks/post-commit" "$@"
+```
+
+`exec` is what makes this transparent: the script keeps the working
+directory git gave it, the exit status passes back untouched -- which
+`prepare-commit-msg` depends on, since it defers a commit by exiting
+non-zero -- and `*file*` resolves to the real script, so it still finds
+`src/` beside it.
+
+Then point the installer at that directory rather than this one, so that
+re-running it does not take `core.hooksPath` back:
+
+```sh
+.hooks/logseq-hooks/bin/install --hooks-path .hooks
+```
 
 ### Notes on being a submodule
 
@@ -73,8 +98,10 @@ Where this repo is mounted is a fact only the graph knows, so it is the
 installer that writes it into `:excluded-paths` rather than a default
 here: a submodule pointer bump is a real diff in the graph, but it is
 not a note, and a guessed default would be right only by coincidence and
-wrong in silence. Move the submodule and the config needs the same move
-made in it, which is what the installer's parting note is for.
+wrong in silence. The same goes for a `--hooks-path` directory, whose
+wrappers are not notes either. Move either of them and the config needs
+the same move made in it, which is what the installer's parting note is
+for.
 
 ## How the two hooks fit together
 

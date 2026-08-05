@@ -1,6 +1,6 @@
-;; Seeded to .git/logseq-hooks.edn by bin/install, which substitutes this
-;; repo's actual mount point for @HOOKS_PATH@ below. Copying it by hand works
-;; too, so long as you make that substitution yourself and chmod 600.
+;; Seeded to .git/logseq-hooks.edn by bin/install, which substitutes the paths
+;; git hooks actually live at for @EXCLUDED_PATHS@ below. Copying it by hand
+;; works too, so long as you make that substitution yourself and chmod 600.
 ;;
 ;; Kept inside .git/ rather than the working tree so that it holds an API key
 ;; without Logseq syncing it or git tracking it. The trade-off is that a fresh
@@ -26,11 +26,12 @@
  :max-defer-seconds 14400  ; 2 hrs
 
  ;; Paths in the graph that are not notes. This repo's mount point is here
- ;; because a submodule pointer bump is a real diff but says nothing; add
+ ;; because a submodule pointer bump is a real diff but says nothing, as is
+ ;; the hooks directory itself if the graph keeps its own hooks in one; add
  ;; generated files and anything else you would not want a commit message to
- ;; describe. Replaces the default rather than extending it, so keep the
- ;; mount point in the list.
- :excluded-paths ["@HOOKS_PATH@"]
+ ;; describe. Replaces the default rather than extending it, so keep what is
+ ;; already in the list.
+ :excluded-paths [@EXCLUDED_PATHS@]
 
  ;; Logseq churn that carries no meaning. Add to this if you find other
  ;; properties being rewritten behind your back.
