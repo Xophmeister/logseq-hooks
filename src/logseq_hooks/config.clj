@@ -17,10 +17,15 @@
    ;; assumed to be a deliberate commit and left completely alone.
    :auto-commit-message "Auto saved by Logseq"
 
-   ;; Directories in the graph that are not notes and should not count towards
-   ;; churn or be described in a commit message. Defaults to where this repo is
-   ;; conventionally mounted as a submodule.
-   :excluded-paths [".hooks"]
+   ;; Paths in the graph that are not notes and should not count towards churn
+   ;; or be described in a commit message: chiefly wherever this repo is
+   ;; mounted, since a submodule pointer bump is a real diff but not a note.
+   ;;
+   ;; Empty by default, because the mount point is a deployment fact the
+   ;; library cannot know. `bin/install` writes the real one into the config it
+   ;; seeds; guessing `.hooks` here would only be right by coincidence and
+   ;; wrong silently.
+   :excluded-paths []
 
    ;; Logseq rewrites files for reasons that carry no meaning: toggling a
    ;; block's fold state, or stamping an `id::` onto a block the moment it is

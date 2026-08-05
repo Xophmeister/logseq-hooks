@@ -1,4 +1,6 @@
-;; Copy to .git/logseq-hooks.edn and chmod 600.
+;; Seeded to .git/logseq-hooks.edn by bin/install, which substitutes this
+;; repo's actual mount point for @HOOKS_PATH@ below. Copying it by hand works
+;; too, so long as you make that substitution yourself and chmod 600.
 ;;
 ;; Kept inside .git/ rather than the working tree so that it holds an API key
 ;; without Logseq syncing it or git tracking it. The trade-off is that a fresh
@@ -6,6 +8,8 @@
 ;;
 ;; Every key is optional except :api-key. Anything omitted falls back to
 ;; logseq-hooks.config/defaults; only override what you actually want to change.
+;; The overlay is shallow (:push aside), so a collection you set here replaces
+;; the default outright rather than adding to it.
 
 {;; Must match Logseq's own commit message exactly. Commits with any other
  ;; message are left completely alone.
@@ -20,6 +24,13 @@
 
  ;; Commit anyway once changes have been held back this long.
  :max-defer-seconds 14400  ; 2 hrs
+
+ ;; Paths in the graph that are not notes. This repo's mount point is here
+ ;; because a submodule pointer bump is a real diff but says nothing; add
+ ;; generated files and anything else you would not want a commit message to
+ ;; describe. Replaces the default rather than extending it, so keep the
+ ;; mount point in the list.
+ :excluded-paths ["@HOOKS_PATH@"]
 
  ;; Logseq churn that carries no meaning. Add to this if you find other
  ;; properties being rewritten behind your back.

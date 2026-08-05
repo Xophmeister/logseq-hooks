@@ -46,8 +46,14 @@ git submodule add <url> .hooks
 
 Then put your API key in `.git/logseq-hooks.edn`. The installer is
 idempotent, so re-run it after a fresh clone or a submodule bump. It
-sets `core.hooksPath`, seeds the config from the example and tells you
-what it couldn't do for you.
+sets `core.hooksPath`, seeds the config from the example -- substituting
+wherever you actually mounted this repo into `:excluded-paths` -- and
+tells you what it couldn't do for you.
+
+Note that the config is overlaid on the defaults shallowly, `:push`
+aside, so a collection you set replaces the default rather than adding
+to it. Adding a generated file to `:excluded-paths` means listing the
+mount point alongside it, not on its own.
 
 Requires `bb` on the `PATH` that Logseq is started with.
 
@@ -63,9 +69,12 @@ from inside the submodule and it will resolve `.git/modules/.hooks/`
 instead, find no config and behave as though nothing were set. Drive it
 from the graph root, or via an actual `git commit`.
 
-Mounting anywhere other than `.hooks` means setting `:excluded-paths` to
-match.  Otherwise a submodule pointer bump counts towards churn and gets
-described in a commit message as though it were a note.
+Where this repo is mounted is a fact only the graph knows, so it is the
+installer that writes it into `:excluded-paths` rather than a default
+here: a submodule pointer bump is a real diff in the graph, but it is
+not a note, and a guessed default would be right only by coincidence and
+wrong in silence. Move the submodule and the config needs the same move
+made in it, which is what the installer's parting note is for.
 
 ## How the two hooks fit together
 

@@ -33,10 +33,30 @@ echo "core.hooksPath set to $rel_hooks"
 # The config lives in the git directory rather than the working tree because it
 # holds an API key: git does not track it and Logseq does not sync it. The
 # corollary is that it does not survive a fresh clone, hence this script.
+example="$hooks_dir/logseq-hooks.example.edn"
+placeholder="@HOOKS_PATH@"
+
 if [[ -e "$config_file" ]]; then
     echo "config already present at $config_file, left alone"
+    # Only a freshly seeded config gets the mount point written into it, and
+    # the library no longer guesses one. So an older config, or one written
+    # before the submodule was moved, would quietly count pointer bumps as
+    # notes. Grepping the text is crude, but this only offers advice.
+    if ! grep -qF "\"$rel_hooks\"" "$config_file"; then
+        echo "note: $config_file does not mention $rel_hooks; add it to" \
+             ":excluded-paths or submodule bumps count towards churn"
+    fi
 else
-    install -m 600 "$hooks_dir/logseq-hooks.example.edn" "$config_file"
+    if ! grep -qF "$placeholder" "$example"; then
+        echo "error: $placeholder is missing from $example, so the mount" >&2
+        echo "       point cannot be seeded; the two have drifted apart" >&2
+        exit 1
+    fi
+    # Created empty and private first: the redirection below leaves the mode
+    # alone, so the file is never briefly readable by anyone else.
+    install -m 600 /dev/null "$config_file"
+    awk -v path="$rel_hooks" -v ph="$placeholder" '{ gsub(ph, path); print }' \
+        "$example" > "$config_file"
     echo "config created at $config_file; add your API key to it"
 fi
 
@@ -53,9 +73,3 @@ for pattern in "logseq/bak/" "logseq/.recycle/"; do
         echo "suggestion: add '$pattern' to $gitignore"
     fi
 done
-
-# The default assumes the conventional mount point; say so if it is wrong,
-# rather than silently counting submodule bumps as notes.
-if [[ "$rel_hooks" != ".hooks" ]]; then
-    echo "note: mounted at $rel_hooks, so set :excluded-paths [\"$rel_hooks\"] in the config"
-fi
