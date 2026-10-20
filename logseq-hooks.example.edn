@@ -42,6 +42,11 @@
  :model "claude-haiku-4-5-20251001"
  :api-timeout-ms 5000
 
+ ;; Thinking is off by default: it adds nothing to a one-line subject and its
+ ;; tokens count against the reply's budget. Set nil to omit the parameter if
+ ;; your chosen model rejects {:type "disabled"}.
+ ;; :thinking {:type "disabled"}
+
  ;; Natural language and variant to write commit messages in. Set nil to leave
  ;; it to the model. Defaults to "British English".
  :language "British English"
