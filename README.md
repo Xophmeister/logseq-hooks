@@ -127,6 +127,11 @@ without committing anything. `:word-threshold` and `:block-threshold`
 are the numbers to adjust; the defaults of 120 and 20 are guesses, not
 findings.
 
+Logseq discards hook output, so `prepare-commit-msg` also appends each
+decision to `.git/logseq-hooks.log`. When commit messages turn into the
+`<page> (<n> words changed)` fallback, the log says why: a timeout, an
+HTTP error or a reply with no usable text.
+
 ### Why churn is measured three different ways
 
 A Logseq block is normally a single markdown line, however long that
