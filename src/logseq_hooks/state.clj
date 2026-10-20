@@ -51,3 +51,25 @@
 
 (defn unmark! [filename]
   (fs/delete-if-exists (git/git-path filename)))
+
+;;; --------------------------------------------------------------------- log
+
+(def log-filename "logseq-hooks.log")
+
+;; One line per auto-commit attempt adds up over years of half-hourly commits,
+;; so keep one previous generation and drop anything older.
+(def ^:private log-max-bytes (* 1024 1024))
+
+(defn log!
+  "Appends a timestamped line to the hook log in the git directory.
+
+  Logseq discards hook output, so without this there is no record of why a
+  commit was held back or got the fallback message. Never throws: losing a log
+  line is better than losing a commit."
+  [line]
+  (try
+    (let [f (git/git-path log-filename)]
+      (when (and (fs/exists? f) (> (fs/size f) log-max-bytes))
+        (fs/move f (git/git-path (str log-filename ".1")) {:replace-existing true}))
+      (spit f (str (java.time.OffsetDateTime/now) " " line "\n") :append true))
+    (catch Exception _ nil)))

@@ -39,6 +39,13 @@
 ;; waiting. Without it, a week of small edits would never be committed at all.
 (def pending-marker "logseq-deferred-commit")
 
+(defn report
+  "Prints `msg` for anyone running git by hand, and keeps it in the hook log
+  for everyone else: Logseq swallows hook output."
+  [msg]
+  (println (str "logseq: " msg))
+  (state/log! (str "prepare-commit-msg: " msg)))
+
 ;;; ---------------------------------------------------------------- decision
 
 (defn auto-commit?
@@ -77,9 +84,10 @@
                         :api-key (config/require-key :api-key)
                         :model (config/value :model)
                         :max-tokens (config/value :max-tokens)
+                        :thinking (config/value :thinking)
                         :api-timeout-ms (config/value :api-timeout-ms)
                         :language (config/value :language)})]
-    (println (str "logseq: " reason))
+    (report reason)
     (if (config/value :dry-run)
       (println (str "logseq: dry run, message would have been:\n" text))
       (spit msg-file text))))
@@ -102,7 +110,7 @@
       :leave 0
       :rewrite (do (rewrite! msg-file exclusions (:words churn)) 0)
       :defer (do (state/mark! pending-marker)
-                 (println (str "logseq: holding back commit; " reason))
+                 (report (str "holding back commit; " reason))
                  (if (config/value :dry-run) 0 1)))))
 
 (defn -main [& args]
@@ -112,9 +120,10 @@
      (catch Exception e
        ;; Deliberately permissive: a broken hook must not stand between someone
        ;; and their notes. Commit with the original message and complain.
-       (binding [*out* *err*]
-         (println (str "logseq: prepare-commit-msg failed, committing as-is; "
-                       (ex-message e))))
+       (let [msg (str "prepare-commit-msg failed, committing as-is; " (ex-message e))]
+         (binding [*out* *err*]
+           (println (str "logseq: " msg)))
+         (state/log! msg))
        0))))
 
 (apply -main *command-line-args*)

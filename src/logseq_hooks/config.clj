@@ -44,6 +44,12 @@
 
    :model "claude-haiku-4-5-20251001"
    :max-tokens 400
+
+   ;; Sent as the request's `thinking` parameter. A subject line gains nothing
+   ;; from deliberation, and on models that think by default the thinking
+   ;; tokens come out of :max-tokens, often leaving none for the reply. Set nil
+   ;; to omit the parameter for a model that rejects "disabled".
+   :thinking {:type "disabled"}
    :api-timeout-ms 5000
 
    ;; Natural language and variant the commit message is written in. Defaults

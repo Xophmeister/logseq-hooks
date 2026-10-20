@@ -22,7 +22,24 @@
 (defn- truncate [s n]
   (if (> (count s) n) (str (subs s 0 n) "…") s))
 
-(defn- request [{:keys [api-key model max-tokens system prompt timeout-ms]}]
+(defn response->result
+  "Interprets a Messages API response as {:text ...} or {:error ...}.
+
+  A reply that stopped at `max_tokens` is an error even when it carries text:
+  that text was cut off mid-sentence and nothing downstream can tell it apart
+  from a reply that was meant to be short."
+  [status body]
+  (if (= 200 status)
+    (let [parsed (json/parse-string body true)]
+      (if (= "max_tokens" (:stop_reason parsed))
+        {:error (format "response truncated at max_tokens (%s output tokens)"
+                        (get-in parsed [:usage :output_tokens]))}
+        (if-let [text (extract-text parsed)]
+          {:text text}
+          {:error "response contained no text"})))
+    {:error (format "HTTP %s: %s" status (truncate (str body) 200))}))
+
+(defn- request [{:keys [api-key model max-tokens system prompt thinking timeout-ms]}]
   (let [{:keys [status body]}
         (http/post endpoint
                    {:headers {"x-api-key" api-key
@@ -32,14 +49,11 @@
                            (cond-> {:model model
                                     :max_tokens max-tokens
                                     :messages [{:role "user" :content prompt}]}
-                             system (assoc :system system)))
+                             system (assoc :system system)
+                             thinking (assoc :thinking thinking)))
                     :timeout timeout-ms
                     :throw false})]
-    (if (= 200 status)
-      (if-let [text (extract-text (json/parse-string body true))]
-        {:text text}
-        {:error "response contained no text"})
-      {:error (format "HTTP %s: %s" status (truncate (str body) 200))})))
+    (response->result status body)))
 
 (defn message
   "Sends `prompt` and returns {:text ...} or {:error ...}.
