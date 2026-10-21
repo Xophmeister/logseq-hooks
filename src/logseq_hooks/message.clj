@@ -162,12 +162,13 @@
 (defn generate
   "Returns [message reason]. Falls back to `fallback-subject` on any failure,
   with the reason carried through so the hook can log why."
-  [{:keys [entries words stat diff truncated? api-key model max-tokens thinking api-timeout-ms language]}]
+  [{:keys [entries words stat diff truncated? api-key model max-tokens thinking effort api-timeout-ms language]}]
   (let [{:keys [text error]} (anthropic/message
                               {:api-key api-key
                                :model model
                                :max-tokens max-tokens
                                :thinking thinking
+                               :effort effort
                                :timeout-ms api-timeout-ms
                                :system (system-prompt {:language language})
                                :prompt (build-prompt {:stat stat

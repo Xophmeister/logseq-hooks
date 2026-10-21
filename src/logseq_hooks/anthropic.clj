@@ -39,7 +39,7 @@
           {:error "response contained no text"})))
     {:error (format "HTTP %s: %s" status (truncate (str body) 200))}))
 
-(defn- request [{:keys [api-key model max-tokens system prompt thinking timeout-ms]}]
+(defn- request [{:keys [api-key model max-tokens system prompt thinking effort timeout-ms]}]
   (let [{:keys [status body]}
         (http/post endpoint
                    {:headers {"x-api-key" api-key
@@ -50,7 +50,8 @@
                                     :max_tokens max-tokens
                                     :messages [{:role "user" :content prompt}]}
                              system (assoc :system system)
-                             thinking (assoc :thinking thinking)))
+                             thinking (assoc :thinking thinking)
+                             effort (assoc :output_config {:effort effort})))
                     :timeout timeout-ms
                     :throw false})]
     (response->result status body)))

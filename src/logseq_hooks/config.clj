@@ -43,13 +43,21 @@
    :max-defer-seconds (* 4 60 60)
 
    :model "claude-haiku-4-5-20251001"
-   :max-tokens 400
 
-   ;; Sent as the request's `thinking` parameter. A subject line gains nothing
-   ;; from deliberation, and on models that think by default the thinking
-   ;; tokens come out of :max-tokens, often leaving none for the reply. Set nil
-   ;; to omit the parameter for a model that rejects "disabled".
-   :thinking {:type "disabled"}
+   ;; A ceiling, not a target: a reply is a few dozen tokens, but on models
+   ;; that think by default the thinking is paid for out of this budget too.
+   ;; Running out is reported as a failure rather than committing a message
+   ;; cut off mid-phrase, so err on the generous side.
+   :max-tokens 2000
+
+   ;; Sent as the request's `thinking` and `output_config.effort` parameters
+   ;; when set; nil omits them and leaves each model to its own defaults, which
+   ;; is the only setting every model accepts (Haiku 4.5, for one, rejects
+   ;; effort outright). Prefer lowering :effort to disabling thinking: a model
+   ;; that thinks by default and is told not to tends to deliberate in the reply
+   ;; instead, drafts and character counts included.
+   :thinking nil
+   :effort nil
    :api-timeout-ms 5000
 
    ;; Natural language and variant the commit message is written in. Defaults

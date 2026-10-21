@@ -85,6 +85,7 @@
                         :model (config/value :model)
                         :max-tokens (config/value :max-tokens)
                         :thinking (config/value :thinking)
+                        :effort (config/value :effort)
                         :api-timeout-ms (config/value :api-timeout-ms)
                         :language (config/value :language)})]
     (report reason)
