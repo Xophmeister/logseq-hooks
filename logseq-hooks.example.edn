@@ -42,10 +42,12 @@
  :model "claude-haiku-4-5-20251001"
  :api-timeout-ms 5000
 
- ;; Thinking is off by default: it adds nothing to a one-line subject and its
- ;; tokens count against the reply's budget. Set nil to omit the parameter if
- ;; your chosen model rejects {:type "disabled"}.
- ;; :thinking {:type "disabled"}
+ ;; Left to the model by default. On a model that thinks by default and
+ ;; supports effort (claude-haiku-5-5, for example), "low" keeps a commit
+ ;; message quick to write; Haiku 4.5 rejects the parameter, so leave it unset
+ ;; there. Lower effort rather than disabling thinking, which tends to push the
+ ;; model's deliberation into the message itself.
+ ;; :effort "low"
 
  ;; Natural language and variant to write commit messages in. Set nil to leave
  ;; it to the model. Defaults to "British English".
